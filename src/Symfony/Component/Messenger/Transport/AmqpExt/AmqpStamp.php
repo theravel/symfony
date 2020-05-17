@@ -22,6 +22,7 @@ final class AmqpStamp implements NonSendableStampInterface
     private $routingKey;
     private $flags;
     private $attributes;
+    private $isEnvelopeRedelivered = false;
 
     public function __construct(string $routingKey = null, int $flags = AMQP_NOPARAM, array $attributes = [])
     {
@@ -45,7 +46,12 @@ final class AmqpStamp implements NonSendableStampInterface
         return $this->attributes;
     }
 
-    public static function createFromAmqpEnvelope(\AMQPEnvelope $amqpEnvelope, self $previousStamp = null): self
+    public function isEnvelopeRedelivered(): bool
+    {
+        return $this->isEnvelopeRedelivered;
+    }
+
+    public static function createFromAmqpEnvelope(\AMQPEnvelope $amqpEnvelope, self $previousStamp = null, string $redeliveryRoutingKey = null): self
     {
         $attr = $previousStamp->attributes ?? [];
 
@@ -62,7 +68,14 @@ final class AmqpStamp implements NonSendableStampInterface
         $attr['type'] = $attr['type'] ?? $amqpEnvelope->getType();
         $attr['reply_to'] = $attr['reply_to'] ?? $amqpEnvelope->getReplyTo();
 
-        return new self($previousStamp->routingKey ?? $amqpEnvelope->getRoutingKey(), $previousStamp->flags ?? AMQP_NOPARAM, $attr);
+        if (null === $redeliveryRoutingKey) {
+            $stamp = new self($previousStamp->routingKey ?? $amqpEnvelope->getRoutingKey(), $previousStamp->flags ?? AMQP_NOPARAM, $attr);
+        } else {
+            $stamp = new self($redeliveryRoutingKey, $previousStamp->flags ?? AMQP_NOPARAM, $attr);
+            $stamp->isEnvelopeRedelivered = true;
+        }
+
+        return $stamp;
     }
 
     public static function createWithAttributes(array $attributes, self $previousStamp = null): self
