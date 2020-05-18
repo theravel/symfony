@@ -107,7 +107,7 @@ class Connection
         $this->connectionOptions = array_replace_recursive([
             'delay' => [
                 'exchange_name' => 'delays',
-                'queue_name_pattern' => 'delay_%exchange_name%_%routing_key%_%delay%',
+                'queue_name_pattern' => 'delay_%exchange_name%_%routing_key%_%action%_%delay%',
             ],
         ], $connectionOptions);
         $this->exchangeOptions = $exchangeOptions;
@@ -140,7 +140,7 @@ class Connection
      *     * flags: Exchange flags (Default: AMQP_DURABLE)
      *     * arguments: Extra arguments
      *   * delay:
-     *     * queue_name_pattern: Pattern to use to create the queues (Default: "delay_%exchange_name%_%routing_key%_%delay%")
+     *     * queue_name_pattern: Pattern to use to create the queues (Default: "delay_%exchange_name%_%routing_key%_%action%_%delay%")
      *     * exchange_name: Name of the exchange to be used for the delayed/retried messages (Default: "delays")
      *   * auto_setup: Enable or not the auto-setup of queues and exchanges (Default: true)
      *   * prefetch_count: set channel prefetch count
@@ -300,13 +300,14 @@ class Connection
     private function publishWithDelay(string $body, array $headers, int $delay, AmqpStamp $amqpStamp = null)
     {
         $routingKey = $this->getRoutingKeyForMessage($amqpStamp);
+        $isRetryAttempt = $amqpStamp ? $amqpStamp->isEnvelopeRedelivered() : false;
 
-        $this->setupDelay($delay, $routingKey);
+        $this->setupDelay($delay, $routingKey, $isRetryAttempt);
 
         $this->publishOnExchange(
             $this->getDelayExchange(),
             $body,
-            $this->getRoutingKeyForDelay($delay, $routingKey),
+            $this->getRoutingKeyForDelay($delay, $routingKey, $isRetryAttempt),
             $headers,
             $amqpStamp
         );
@@ -326,15 +327,15 @@ class Connection
         );
     }
 
-    private function setupDelay(int $delay, ?string $routingKey)
+    private function setupDelay(int $delay, ?string $routingKey, bool $isRetryAttempt)
     {
         if ($this->shouldSetup()) {
             $this->setup(); // setup delay exchange and normal exchange for delay queue to DLX messages to
         }
 
-        $queue = $this->createDelayQueue($delay, $routingKey);
+        $queue = $this->createDelayQueue($delay, $routingKey, $isRetryAttempt);
         $queue->declareQueue(); // the delay queue always need to be declared because the name is dynamic and cannot be declared in advance
-        $queue->bind($this->connectionOptions['delay']['exchange_name'], $this->getRoutingKeyForDelay($delay, $routingKey));
+        $queue->bind($this->connectionOptions['delay']['exchange_name'], $this->getRoutingKeyForDelay($delay, $routingKey, $isRetryAttempt));
     }
 
     private function getDelayExchange(): \AMQPExchange
@@ -358,21 +359,19 @@ class Connection
      * which is the original exchange, resulting on it being put back into
      * the original queue.
      */
-    private function createDelayQueue(int $delay, ?string $routingKey): \AMQPQueue
+    private function createDelayQueue(int $delay, ?string $routingKey, bool $isRetryAttempt): \AMQPQueue
     {
         $queue = $this->amqpFactory->createQueue($this->channel());
-        $queue->setName(str_replace(
-            ['%delay%', '%exchange_name%', '%routing_key%'],
-            [$delay, $this->exchangeOptions['name'], $routingKey ?? ''],
-            $this->connectionOptions['delay']['queue_name_pattern']
-        ));
+        $queue->setName($this->getRoutingKeyForDelay($delay, $routingKey, $isRetryAttempt));
         $queue->setFlags(AMQP_DURABLE);
         $queue->setArguments([
             'x-message-ttl' => $delay,
             // delete the delay queue 10 seconds after the message expires
             // publishing another message redeclares the queue which renews the lease
             'x-expires' => $delay + 10000,
-            'x-dead-letter-exchange' => $this->exchangeOptions['name'],
+            // message should be broadcasted to all consumers during delay, but to only one queue during retry
+            // empty name is default direct exchange
+            'x-dead-letter-exchange' => $isRetryAttempt ? '' : $this->exchangeOptions['name'],
             // after being released from to DLX, make sure the original routing key will be used
             // we must use an empty string instead of null for the argument to be picked up
             'x-dead-letter-routing-key' => $routingKey ?? '',
@@ -381,11 +380,13 @@ class Connection
         return $queue;
     }
 
-    private function getRoutingKeyForDelay(int $delay, ?string $finalRoutingKey): string
+    private function getRoutingKeyForDelay(int $delay, ?string $finalRoutingKey, bool $isRetryAttempt): string
     {
+        $action = $isRetryAttempt ? 'retry' : 'delay';
+
         return str_replace(
-            ['%delay%', '%exchange_name%', '%routing_key%'],
-            [$delay, $this->exchangeOptions['name'], $finalRoutingKey ?? ''],
+            ['%delay%', '%exchange_name%', '%routing_key%', '%action%'],
+            [$delay, $this->exchangeOptions['name'], $finalRoutingKey ?? '', $action],
             $this->connectionOptions['delay']['queue_name_pattern']
         );
     }

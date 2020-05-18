@@ -136,6 +136,45 @@ class AmqpExtIntegrationTest extends TestCase
         $receiver->ack($envelope);
     }
 
+    public function testRetryAffectsOnlyOriginalQueue()
+    {
+        $connection = Connection::fromDsn(getenv('MESSENGER_AMQP_DSN'), [
+            'exchange' => [
+                'name' => 'messages_topic',
+                'type' => 'topic',
+                'default_publish_routing_key' => 'topic_routing_key',
+            ],
+            'queues' => [
+                'A' => ['binding_keys' => ['topic_routing_key']],
+                'B' => ['binding_keys' => ['topic_routing_key']],
+            ],
+        ]);
+        $connection->setup();
+        $connection->purgeQueues();
+
+        $serializer = $this->createSerializer();
+        $sender = new AmqpSender($connection, $serializer);
+        $receiver = new AmqpReceiver($connection, $serializer);
+
+        // initial delivery: should receive in both queues
+        $sender->send(new Envelope(new DummyMessage('Payload')));
+
+        $receivedEnvelopes = $this->receiveWithQueueName($receiver);
+        $this->assertCount(2, $receivedEnvelopes);
+        $this->assertArrayHasKey('A', $receivedEnvelopes);
+        $this->assertArrayHasKey('B', $receivedEnvelopes);
+
+        // redelivery: should receive in only "A" queue
+        $retryEnvelope = $receivedEnvelopes['A']
+            ->with(new DelayStamp(10))
+            ->with(new RedeliveryStamp(1));
+        $sender->send($retryEnvelope);
+
+        $redelivedEnvelopes = $this->receiveWithQueueName($receiver);
+        $this->assertCount(1, $redelivedEnvelopes);
+        $this->assertArrayHasKey('A', $redelivedEnvelopes);
+    }
+
     public function testItReceivesSignals()
     {
         $serializer = $this->createSerializer();
@@ -247,5 +286,20 @@ TXT
         }
 
         return $envelopes;
+    }
+
+    private function receiveWithQueueName(AmqpReceiver $receiver)
+    {
+        // let RabbitMQ receive messages
+        usleep(100 * 1000); // 100ms
+
+        $receivedEnvelopes = [];
+        foreach ($receiver->get() as $envelope) {
+            $queueName = $envelope->last(AmqpReceivedStamp::class)->getQueueName();
+            $receivedEnvelopes[$queueName] = $envelope;
+            $receiver->ack($envelope);
+        }
+
+        return $receivedEnvelopes;
     }
 }
