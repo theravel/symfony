@@ -107,7 +107,7 @@ class Connection
         $this->connectionOptions = array_replace_recursive([
             'delay' => [
                 'exchange_name' => 'delays',
-                'queue_name_pattern' => 'delay_%exchange_name%_%routing_key%_%action%_%delay%',
+                'queue_name_pattern' => 'delay_%exchange_name%_%routing_key%_%delay%',
             ],
         ], $connectionOptions);
         $this->exchangeOptions = $exchangeOptions;
@@ -140,7 +140,7 @@ class Connection
      *     * flags: Exchange flags (Default: AMQP_DURABLE)
      *     * arguments: Extra arguments
      *   * delay:
-     *     * queue_name_pattern: Pattern to use to create the queues (Default: "delay_%exchange_name%_%routing_key%_%action%_%delay%")
+     *     * queue_name_pattern: Pattern to use to create the queues (Default: "delay_%exchange_name%_%routing_key%_%delay%")
      *     * exchange_name: Name of the exchange to be used for the delayed/retried messages (Default: "delays")
      *   * auto_setup: Enable or not the auto-setup of queues and exchanges (Default: true)
      *   * prefetch_count: set channel prefetch count
@@ -382,13 +382,13 @@ class Connection
 
     private function getRoutingKeyForDelay(int $delay, ?string $finalRoutingKey, bool $isRetryAttempt): string
     {
-        $action = $isRetryAttempt ? 'retry' : 'delay';
+        $action = $isRetryAttempt ? '_retry' : '_delay';
 
         return str_replace(
-            ['%delay%', '%exchange_name%', '%routing_key%', '%action%'],
-            [$delay, $this->exchangeOptions['name'], $finalRoutingKey ?? '', $action],
+            ['%delay%', '%exchange_name%', '%routing_key%'],
+            [$delay, $this->exchangeOptions['name'], $finalRoutingKey ?? ''],
             $this->connectionOptions['delay']['queue_name_pattern']
-        );
+        ).$action;
     }
 
     /**
